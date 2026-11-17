@@ -1,6 +1,6 @@
 # react-native-gpui-todo
 
-A desktop todo app built with [React Native GPUI](https://streetwriters.github.io/react-native-gpui/), with the UI written in React Native and **all of the todo logic written in Rust**. It uses a Discord-style dark theme.
+A desktop todo app built with [React Native GPUI](https://streetwriters.github.io/react-native-gpui/), with the UI written in React Native and **all of the todo logic written in Rust**.
 
 - Add, complete, and delete todos
 - Filter by **All / Active / Done**
@@ -89,7 +89,7 @@ It also uses some GPUI desktop-only props, such as `hoverStyle`, `group` / `grou
 ## Project layout
 
 ```
-App.tsx                      React UI (Discord-style theme)
+App.tsx                      React UI
 desktop/
   src/main.rs                desktop entry point, registers the Rust module
   src/NativeTodoStore.ts     TurboModule spec (shared JS ⇄ Rust contract)
@@ -134,14 +134,3 @@ The first build takes a few minutes because it compiles the GPUI renderer. Later
 cd desktop && cargo test
 ```
 
-## Color palette
-
-| Role             | Color     |
-| ---------------- | --------- |
-| Background       | `#313338` |
-| Rows             | `#2b2d31` |
-| Input            | `#383a40` |
-| Accent (blurple) | `#5865f2` |
-| Done (green)     | `#23a55a` |
-| Delete (red)     | `#f23f43` |
-| Text / muted     | `#dbdee1` / `#949ba4` |
