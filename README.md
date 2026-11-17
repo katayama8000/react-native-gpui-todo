@@ -1,97 +1,147 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# react-native-gpui-todo
 
-# Getting Started
+A desktop todo app built with [React Native GPUI](https://streetwriters.github.io/react-native-gpui/), with the UI written in React Native and **all of the todo logic written in Rust**. It uses a Discord-style dark theme.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+- Add, complete, and delete todos
+- Filter by **All / Active / Done**
+- "N items left" counter and **Clear completed**
+- Todos are saved to disk and restored on the next launch
 
-## Step 1: Start Metro
+## How it works
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+React Native GPUI runs a normal React Native app (Hermes JS engine + Fabric) but renders it with [GPUI](https://www.gpui.rs/), the GPU-accelerated Rust UI framework from Zed, instead of iOS/Android views. The desktop host is a Rust binary (`desktop/`), which means you can write native code for the app in Rust as a **TurboModule**.
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+This app splits the work like this:
 
-```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+```
+┌──────────────────────────────┐        ┌───────────────────────────────────┐
+│  App.tsx  (React / JS)       │        │  desktop/src/todo_store.rs (Rust) │
+│                              │  JSI   │                                   │
+│  - renders the list          │ ─────▶ │  - holds the todo list (Mutex)    │
+│  - keeps only UI state:      │        │  - validates / trims titles       │
+│    input text, filter,       │ ◀───── │  - toggle / remove / clear done   │
+│    last TodoState snapshot   │        │  - filtering + counts             │
+│                              │        │  - saves/loads todos.json         │
+└──────────────────────────────┘        └───────────────────────────────────┘
+              ▲                                          ▲
+              └──── desktop/src/NativeTodoStore.ts ──────┘
+                    (typed spec → generated Rust trait)
 ```
 
-## Step 2: Build and run your app
+### 1. The spec: `desktop/src/NativeTodoStore.ts`
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+A TypeScript TurboModule spec describes the API that Rust exposes to JS:
 
-### Android
-
-```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+```ts
+export interface Spec extends TurboModule {
+  getState(filter: Filter): TodoState; // { items, remaining, total }
+  add(title: string): boolean;          // false if title is blank
+  toggle(id: number): boolean;
+  remove(id: number): boolean;
+  clearDone(): number;                  // how many were removed
+}
 ```
 
-### iOS
+### 2. Code generation: `desktop/build.rs`
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+The build script passes the spec to the codegen:
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
+```rust
+rn_gpui_module_build::generate(&["src/NativeTodoStore.ts"]);
 ```
 
-Then, and every time you update your native dependencies, run:
+At build time this creates a Rust trait `NativeTodoStoreSpec`, along with `Todo`, `TodoState`, and `Filter` types that match the TS types. `rn_gpui_module::include_specs!()` in `main.rs` pulls the generated code in. If the Rust implementation doesn't match the spec, the build fails with a compile error, so the JS and Rust sides can't silently drift apart.
 
-```sh
-bundle exec pod install
+### 3. The implementation: `desktop/src/todo_store.rs`
+
+`TodoStore` implements the generated trait. The data is kept in a `Mutex<Data>`. Every method that changes it then writes JSON to disk:
+
+| OS    | File                                                         |
+| ----- | ------------------------------------------------------------ |
+| macOS | `~/Library/Application Support/react-native-gpui-todo/todos.json` |
+| Linux | `$XDG_DATA_HOME` (or `~/.local/share`)`/react-native-gpui-todo/todos.json` |
+
+Methods that return a value run **synchronously on the JS thread**, so `TodoStore.add(text)` in JS returns the Rust result directly, with no `await`. IDs come from a counter that only goes up, so an ID is never reused after a delete. The pure logic (`Data`) is separate from the module glue and has unit tests.
+
+### 4. Registration: `desktop/src/main.rs`
+
+```rust
+react_native_gpui::register_module(native_todo_store_module::<todo_store::TodoStore>());
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+Registration happens before the app starts, so `TurboModuleRegistry.getEnforcing('NativeTodoStore')` finds the module in JS.
 
-```sh
-# Using npm
-npm run ios
+### 5. The UI: `App.tsx`
 
-# OR using Yarn
-yarn ios
+The React component holds no todo data of its own. It calls a Rust method and then refreshes its snapshot:
+
+```ts
+const addTodo = () => {
+  if (TodoStore.add(text)) {   // Rust validates + saves
+    setText('');
+    refresh();                 // setState(TodoStore.getState(filter))
+  }
+};
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+It also uses some GPUI desktop-only props, such as `hoverStyle`, `group` / `groupHoverStyle` (the delete ✕ shows only when you hover over a row), and `tooltip`.
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+## Project layout
 
-## Step 3: Modify your app
+```
+App.tsx                      React UI (Discord-style theme)
+desktop/
+  src/main.rs                desktop entry point, registers the Rust module
+  src/NativeTodoStore.ts     TurboModule spec (shared JS ⇄ Rust contract)
+  src/todo_store.rs          todo logic + persistence + unit tests
+  build.rs                   runs the codegen for the spec
+  Cargo.toml                 Rust deps (react-native-gpui, serde, serde_json)
+  desktop.json               window / packaging config
+rust-toolchain.toml          pins the project to rustup's stable Rust
+ios/ android/                untouched React Native template targets
+```
 
-Now that you have successfully run the app, let's make changes!
+## Running it
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+### Requirements
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+- Node.js 22.13+
+- Rust **1.98+** installed with [rustup](https://rustup.rs) (`rust-toolchain.toml` selects `stable`)
+- CMake (`brew install cmake`)
+- macOS: Xcode command line tools (`xcode-select --install`)
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+Check your setup with `npx react-native doctor-desktop`.
 
-## Congratulations! :tada:
+### Commands
 
-You've successfully run and modified your React Native App. :partying_face:
+```sh
+npm install
+npx react-native run-desktop            # dev build with Metro + Fast Refresh
+npx react-native run-desktop --release  # optimized build
+npx react-native package-desktop        # build an installer for this OS
+```
 
-### Now what?
+The first build takes a few minutes because it compiles the GPUI renderer. Later builds take seconds.
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
+> **Note:** If you also have Rust from Homebrew, it may come before rustup's
+> Rust in your `PATH` and ignore `rust-toolchain.toml`. Run with
+> `PATH="$HOME/.cargo/bin:$PATH" npx react-native run-desktop`, or upgrade it
+> with `brew upgrade rust`.
 
-# Troubleshooting
+### Rust unit tests
 
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
+```sh
+cd desktop && cargo test
+```
 
-# Learn More
+## Color palette
 
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+| Role             | Color     |
+| ---------------- | --------- |
+| Background       | `#313338` |
+| Rows             | `#2b2d31` |
+| Input            | `#383a40` |
+| Accent (blurple) | `#5865f2` |
+| Done (green)     | `#23a55a` |
+| Delete (red)     | `#f23f43` |
+| Text / muted     | `#dbdee1` / `#949ba4` |
